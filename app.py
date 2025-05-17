@@ -6,8 +6,6 @@ import json
 import time
 import random
 import traceback
-import tkinter as tk
-from tkinter import messagebox
 import psutil
 import requests
 from selenium.webdriver.common.by import By
@@ -85,7 +83,6 @@ def log_activity(message):
     print(f"📘 {message}")
 
 def show_popup(message):
-    root = tk.Tk()
     root.withdraw()
     messagebox.showerror("Error", message)
 
