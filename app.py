@@ -245,7 +245,7 @@ def main():
 
     close_pop = driver.find_elements(By.CLASS_NAME, "im-next-dialog-close")
     if close_pop:
-        close_pop[0].click()
+        close_pop.click()
         log_activity("🔒 Closed pop-up.")
 
     i = 0
