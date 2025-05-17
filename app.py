@@ -248,6 +248,11 @@ def main():
         close_pop[0].click()
         log_activity("🔒 Closed pop-up.")
 
+    close_pop = driver.find_elements(By.CLASS_NAME, "close-icon")
+    if close_pop:
+        close_pop[0].click()
+        log_activity("🔒 Closed pop-up.")
+
     i = 0
     while True:
         try:
