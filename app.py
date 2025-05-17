@@ -83,7 +83,6 @@ def log_activity(message):
     print(f"📘 {message}")
 
 def show_popup(message):
-    root.withdraw()
     messagebox.showerror("Error", message)
 
 def cleanup_and_exit():
