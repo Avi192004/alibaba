@@ -36,7 +36,7 @@ print("✅ All required packages are installed!")
 # ------------------ CONFIGURATION ------------------
 
 MAIN_URL = "https://onetalk.alibaba.com/message/weblitePWA.htm?isGray=1&from=menu&hideMenu=1#/"
-BASE_URL = "https://i.alibaba.com/"
+BASE_URL = "https://alibaba.com/"
 RAG_URL = "https://609f-34-59-106-222.ngrok-free.app/search-embed"  # Replace with your real endpoint
 USE_AI = True  # Toggle AI replies
 
