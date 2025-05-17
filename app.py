@@ -83,7 +83,7 @@ def log_activity(message):
     print(f"📘 {message}")
 
 def show_popup(message):
-    messagebox.showerror("Error", message)
+    print("Error", message)
 
 def cleanup_and_exit():
     global CHROME_PID
