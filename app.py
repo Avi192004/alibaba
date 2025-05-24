@@ -12,6 +12,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
 import openpyxl
 from openpyxl import Workbook
 
@@ -123,7 +124,7 @@ def start_browser():
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-extensions")
-        options.add_argument("--headless=new")
+        # options.add_argument("--headless=new")
 
         driver = uc.Chrome(options=options)
         CHROME_PID = driver.browser_pid
@@ -167,11 +168,11 @@ def get_api_response(question, img_url=None):
         if img_url:
             payload["image"] = img_url
 
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
 
         data = response.json()
-        message = data.get("answer", "We’ll get back to you shortly.")
+        message = data.get("answer", "We'll get back to you shortly.")
         log_activity(f"🔍 API response: {message[:60]}...")
         return message
     except Exception as e:
@@ -253,21 +254,67 @@ def extract_message_data(message_container):
         log_error(f"❌ Error extracting message data: {str(e)}")
         return None, None
 
-def store_inquiry(driver):
+def safe_find_element(element, by, value, default=""):
+    """Safely find an element and return its text, or default value if not found"""
     try:
-        user = driver.find_element(By.CSS_SELECTOR, ".name-text").text.strip()
-        country = driver.find_element(By.CSS_SELECTOR, ".country-flag-label").text.strip()
-        info_array = driver.find_elements(By.CSS_SELECTOR, "div.base-information-form-item-content > span")
+        return element.find_element(by, value).text.strip()
+    except (NoSuchElementException, StaleElementReferenceException):
+        return default
+
+def safe_find_elements(element, by, value):
+    """Safely find elements and return the list, or empty list if not found"""
+    try:
+        return element.find_elements(by, value)
+    except (NoSuchElementException, StaleElementReferenceException):
+        return []
+
+def check_if_inquiry(container):
+    """Check if message is an inquiry with proper error handling"""
+    try:
+        # Try multiple possible selectors for the message type
+        selectors_to_try = [
+            'latest-msg-oneline',
+            'latest-msg',
+            'msg-content',
+            'message-content',
+            'session-content'
+        ]
+        
+        message_text = ""
+        for selector in selectors_to_try:
+            try:
+                element = container.find_element(By.CLASS_NAME, selector)
+                message_text = element.text.strip()
+                break
+            except NoSuchElementException:
+                continue
+        
+        # Check if it's an inquiry based on text content
+        inquiry_keywords = ["[Inquiry]", "[Product]", "inquiry", "product"]
+        return any(keyword.lower() in message_text.lower() for keyword in inquiry_keywords)
+        
+    except Exception as e:
+        log_activity(f"⚠️ Could not determine if message is inquiry: {str(e)}")
+        return False
+
+def store_inquiry(driver, img_url):
+    try:
+        user = safe_find_element(driver, By.CSS_SELECTOR, ".name-text", "Unknown User")
+        country = safe_find_element(driver, By.CSS_SELECTOR, ".country-flag-label", "Unknown Country")
+        
+        info_array = safe_find_elements(driver, By.CSS_SELECTOR, "div.base-information-form-item-content > span")
         company = info_array[0].text.strip() if len(info_array) > 0 else ""
         email = info_array[1].text.strip() if len(info_array) > 1 else ""
         registration_date = info_array[2].text.strip() if len(info_array) > 2 else ""
 
-        product_views_count = driver.find_element(By.CSS_SELECTOR, "div.product-visit.indicator > div.count").text.strip()
-        inquiries_count = driver.find_element(By.CSS_SELECTOR, "div.inquiries-count.indicator > div.count").text.strip()
-        available_rfq_count = driver.find_element(By.CSS_SELECTOR, "div.availble-rfq.indicator > div.count").text.strip()
-        login_days_count = driver.find_element(By.CSS_SELECTOR, "div.landing-days.indicator > div.count").text.strip()
-        spam_inquiries_count = driver.find_element(By.CSS_SELECTOR, "div.trash-inquires.indicator > div.count").text.strip()
-        blacklist_count = driver.find_element(By.CSS_SELECTOR, "div.add-blacklist.indicator > div.count").text.strip()
+        product_views_count = safe_find_element(driver, By.CSS_SELECTOR, "div.product-visit.indicator > div.count", "0")
+        inquiries_count = safe_find_element(driver, By.CSS_SELECTOR, "div.inquiries-count.indicator > div.count", "0")
+        available_rfq_count = safe_find_element(driver, By.CSS_SELECTOR, "div.availble-rfq.indicator > div.count", "0")
+        login_days_count = safe_find_element(driver, By.CSS_SELECTOR, "div.landing-days.indicator > div.count", "0")
+        spam_inquiries_count = safe_find_element(driver, By.CSS_SELECTOR, "div.trash-inquires.indicator > div.count", "0")
+        blacklist_count = safe_find_element(driver, By.CSS_SELECTOR, "div.add-blacklist.indicator > div.count", "0")
+        quantity = inquiry_card_data[5].text.strip()
+        img = img_url
 
         follow_up_date = (datetime.today() + timedelta(days=3)).strftime('%Y-%m-%d')
         inquiry_id = f"INQ-{int(time.time())}"
@@ -278,7 +325,7 @@ def store_inquiry(driver):
             inquiry_id, user, country, company, email, registration_date,
             product_views_count, inquiries_count, available_rfq_count,
             login_days_count, spam_inquiries_count, blacklist_count,
-            follow_up_date, count
+            follow_up_date, count, quantity, img
         ])
         wb.save(SHEET_FILE)
         log_activity(f"📝 Stored inquiry {inquiry_id} to sheet.")
@@ -299,18 +346,22 @@ def store_inquiry(driver):
             "spam_inquiries_count": spam_inquiries_count,
             "blacklist_count": blacklist_count,
             "follow_up_date": follow_up_date,
-            "count": count
+            "count": count,
+            "quantity": quantity,
+            "img": img
         }
 
-        response = requests.post(webhook_url, json=payload)
-        if response.status_code == 200:
-            log_activity(f"📡 Inquiry {inquiry_id} sent to webhook.")
-        else:
-            log_error(f"❌ Failed to send inquiry to webhook: {response.text}")
+        try:
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            if response.status_code == 200:
+                log_activity(f"📡 Inquiry {inquiry_id} sent to webhook.")
+            else:
+                log_error(f"❌ Failed to send inquiry to webhook: {response.text}")
+        except requests.exceptions.RequestException as e:
+            log_error(f"❌ Webhook request failed: {str(e)}")
 
     except Exception as e:
         log_error(f"❌ Error storing/sending inquiry: {str(e)}")
-
 
 # ------------------ MAIN LOOP ------------------
 
@@ -322,65 +373,129 @@ def main():
 
     login(driver)
 
-    close_pop = driver.find_elements(By.CLASS_NAME, "im-next-dialog-close")
-    if close_pop:
-        close_pop[0].click()
-        log_activity("🔒 Closed pop-up.")
+    # Close popups with error handling
+    try:
+        close_pop = safe_find_elements(driver, By.CLASS_NAME, "im-next-dialog-close")
+        if close_pop:
+            close_pop[0].click()
+            log_activity("🔒 Closed pop-up.")
+    except Exception as e:
+        log_activity(f"⚠️ Could not close first popup: {str(e)}")
 
-    close_pop = driver.find_elements(By.CLASS_NAME, "close-icon")
-    if close_pop:
-        close_pop[0].click()
-        log_activity("🔒 Closed pop-up.")
+    try:
+        close_pop = safe_find_elements(driver, By.CLASS_NAME, "close-icon")
+        if close_pop:
+            close_pop[0].click()
+            log_activity("🔒 Closed pop-up.")
+    except Exception as e:
+        log_activity(f"⚠️ Could not close second popup: {str(e)}")
 
     i = 0
+    consecutive_errors = 0
+    
     while True:
         try:
-            unread_messages = driver.find_elements(By.CLASS_NAME, "unread-num")
+            unread_messages = safe_find_elements(driver, By.CLASS_NAME, "unread-num")
             unread_messages_without_labels = []
 
             for message in unread_messages:
-                is_inquiry=False
-                container = message.find_element(By.XPATH, "ancestor::div[2]")
-                if container.find_element(By.CLASS_NAME, 'latest-msg-oneline').text == "[Inquiry]" or container.find_element(By.CLASS_NAME, 'latest-msg-oneline').text == "[Product]":
-                    is_inquiry=True
-                
-                labels = container.find_elements(By.CLASS_NAME, "tag-item ")
-                last_msg_time = container.find_element(By.CLASS_NAME, "contact-time").text
-                today = datetime.today()
-                msg_dt = datetime.strptime(last_msg_time, "%H:%M").replace(year=today.year, month=today.month, day=today.day)
-                msg_timestamp = msg_dt.timestamp()
-                if not labels or time.time() - 180 > msg_timestamp:
-                    unread_messages_without_labels.append(message)
+                try:
+                    is_inquiry = False
+                    container = message.find_element(By.XPATH, "ancestor::div[2]")
+                    
+                    # Check if it's an inquiry with error handling
+                    is_inquiry = check_if_inquiry(container)
+                    
+                    labels = safe_find_elements(container, By.CLASS_NAME, "tag-item")
+                    
+                    # Get message time with error handling
+                    try:
+                        last_msg_time = safe_find_element(container, By.CLASS_NAME, "contact-time")
+                        if last_msg_time:
+                            today = datetime.today()
+                            msg_dt = datetime.strptime(last_msg_time, "%H:%M").replace(year=today.year, month=today.month, day=today.day)
+                            msg_timestamp = msg_dt.timestamp()
+                            
+                            # Only process if no labels or message is recent
+                            if not labels or time.time() - 180 > msg_timestamp:
+                                unread_messages_without_labels.append((message, is_inquiry))
+                        else:
+                            # If we can't get time, still process the message
+                            if not labels:
+                                unread_messages_without_labels.append((message, is_inquiry))
+                    except (ValueError, AttributeError) as e:
+                        log_activity(f"⚠️ Could not parse message time: {str(e)}")
+                        # If we can't parse time, still process if no labels
+                        if not labels:
+                            unread_messages_without_labels.append((message, is_inquiry))
+                            
+                except (NoSuchElementException, StaleElementReferenceException) as e:
+                    log_activity(f"⚠️ Stale element encountered, skipping message: {str(e)}")
+                    continue
 
             if unread_messages_without_labels:
                 i = 0
-                container = unread_messages_without_labels[0].find_element(By.XPATH, "ancestor::div[2]")
-                recipient = container.get_attribute("data-name")
-                log_activity(f"📨 New unread message from: {recipient}")
-                unread_messages_without_labels[0].click()
-                time.sleep(random.uniform(2, 5))
+                consecutive_errors = 0  # Reset error counter on success
+                
+                message_element, is_inquiry = unread_messages_without_labels[0]
+                try:
+                    container = message_element.find_element(By.XPATH, "ancestor::div[2]")
+                    recipient = container.get_attribute("data-name") or "Unknown Recipient"
+                    log_activity(f"📨 New unread message from: {recipient}")
+                    
+                    message_element.click()
+                    time.sleep(random.uniform(2, 5))
 
-                message_container = driver.find_element(By.CSS_SELECTOR, "div.scroll-box > *")
-                message_text, img_url = extract_message_data(message_container)
-                reply = generate_reply(driver, message_text, img_url)
-                send_message(driver, recipient, reply)
-                if is_inquiry:
-                    log_activity("🔄 Inquiry detected, refreshing main page.")
-                    store_inquiry(driver)
+                    # Try to extract message data
+                    try:
+                        message_container = driver.find_element(By.CSS_SELECTOR, "div.scroll-box > *")
+                        message_text, img_url = extract_message_data(message_container)
+                    except NoSuchElemen_utException:
+                        message_text, img_url = "New message", None
+                        log_activity("⚠️ Could not extract message details, using default.")
 
-                driver.get(MAIN_URL)
-                log_activity("🔄 Returned to main page.")
+                    reply = generate_reply(driver, message_text, img_url)
+                    send_message(driver, recipient, reply)
+                    
+                    if is_inquiry:
+                        log_activity("🔄 Inquiry detected, storing data.")
+                        store_inquiry(driver, img_url)
+
+                    driver.get(MAIN_URL)
+                    log_activity("🔄 Returned to main page.")
+                    
+                except (NoSuchElementException, StaleElementReferenceException) as e:
+                    log_activity(f"⚠️ Element became stale, refreshing page: {str(e)}")
+                    driver.get(MAIN_URL)
+                    time.sleep(5)
 
             time.sleep(random.uniform(10, 15))
             i += 1
+            
+            # Refresh page periodically
             if i > 7:
                 log_activity("🔄 Refreshing main page after inactivity.")
                 driver.refresh()
                 time.sleep(random.uniform(25, 30))
+                i = 0
+                
         except Exception as e:
-            log_error(f"⚠️ Critical error in main loop: {str(e)}")
-            cleanup_and_exit()
-            break
+            consecutive_errors += 1
+            log_error(f"⚠️ Error in main loop (#{consecutive_errors}): {str(e)}")
+            
+            # If too many consecutive errors, try to recover
+            if consecutive_errors >= 5:
+                log_activity("🔄 Too many consecutive errors, attempting recovery...")
+                try:
+                    driver.get(MAIN_URL)
+                    time.sleep(10)
+                    consecutive_errors = 0
+                except Exception as recovery_error:
+                    log_error(f"❌ Recovery failed: {str(recovery_error)}")
+                    cleanup_and_exit()
+            else:
+                # Wait a bit before retrying
+                time.sleep(random.uniform(30, 60))
 
 if __name__ == "__main__":
     main()
