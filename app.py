@@ -341,7 +341,7 @@ def main():
             for message in unread_messages:
                 is_inquiry=False
                 container = message.find_element(By.XPATH, "ancestor::div[2]")
-                if container.find_element(By.CLASS_NAME, 'latest-msg-oneline').text == "[Inquiry]":
+                if container.find_element(By.CLASS_NAME, 'latest-msg-oneline').text == "[Inquiry]" or container.find_element(By.CLASS_NAME, 'latest-msg-oneline').text == "[Product]":
                     is_inquiry=True
                 
                 labels = container.find_elements(By.CLASS_NAME, "tag-item ")
