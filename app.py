@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import subprocess
 import sys
 import os
@@ -12,6 +12,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
+import openpyxl
+from openpyxl import Workbook
 
 # ------------------ AUTO-INSTALL REQUIRED MODULES ------------------
 
@@ -57,8 +59,26 @@ else:
 COOKIES_FILE = os.path.join(BASE_DIR, "cookies.json")
 ERROR_LOG = os.path.join(BASE_DIR, "error.log")
 ACTIVITY_LOG = os.path.join(BASE_DIR, "activity.log")
+# Spreadsheet setup
+SHEET_FILE = os.path.join(BASE_DIR, "inquiries.xlsx")
 
 CHROME_PID = None
+
+# -------------------- EXCEL SETUP ------------------
+
+if not os.path.exists(SHEET_FILE):
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "Inquiries"
+    sheet.append([
+        "Inquiry ID", "User", "Country", "Company", "Email", "Registration Date",
+        "Product Views", "Inquiries", "RFQs", "Login Days",
+        "Spam Inquiries", "Blacklist Count", "Follow-up Date", "Count"
+    ])
+    wb.save(SHEET_FILE)
+else:
+    wb = openpyxl.load_workbook(SHEET_FILE)
+    sheet = wb.active
 
 # ------------------ LOGGING ------------------
 
@@ -233,6 +253,65 @@ def extract_message_data(message_container):
         log_error(f"❌ Error extracting message data: {str(e)}")
         return None, None
 
+def store_inquiry(driver):
+    try:
+        user = driver.find_element(By.CSS_SELECTOR, ".name-text").text.strip()
+        country = driver.find_element(By.CSS_SELECTOR, ".country-flag-label").text.strip()
+        info_array = driver.find_elements(By.CSS_SELECTOR, "div.base-information-form-item-content > span")
+        company = info_array[0].text.strip() if len(info_array) > 0 else ""
+        email = info_array[1].text.strip() if len(info_array) > 1 else ""
+        registration_date = info_array[2].text.strip() if len(info_array) > 2 else ""
+
+        product_views_count = driver.find_element(By.CSS_SELECTOR, "div.product-visit.indicator > div.count").text.strip()
+        inquiries_count = driver.find_element(By.CSS_SELECTOR, "div.inquiries-count.indicator > div.count").text.strip()
+        available_rfq_count = driver.find_element(By.CSS_SELECTOR, "div.availble-rfq.indicator > div.count").text.strip()
+        login_days_count = driver.find_element(By.CSS_SELECTOR, "div.landing-days.indicator > div.count").text.strip()
+        spam_inquiries_count = driver.find_element(By.CSS_SELECTOR, "div.trash-inquires.indicator > div.count").text.strip()
+        blacklist_count = driver.find_element(By.CSS_SELECTOR, "div.add-blacklist.indicator > div.count").text.strip()
+
+        follow_up_date = (datetime.today() + timedelta(days=3)).strftime('%Y-%m-%d')
+        inquiry_id = f"INQ-{int(time.time())}"
+        count = 1
+
+        # Save to Excel sheet
+        sheet.append([
+            inquiry_id, user, country, company, email, registration_date,
+            product_views_count, inquiries_count, available_rfq_count,
+            login_days_count, spam_inquiries_count, blacklist_count,
+            follow_up_date, count
+        ])
+        wb.save(SHEET_FILE)
+        log_activity(f"📝 Stored inquiry {inquiry_id} to sheet.")
+
+        # Send to n8n webhook
+        webhook_url = "https://n8n.ecowoodies.com/webhook/alibabadumping"  # Replace with actual URL
+        payload = {
+            "inquiry_id": inquiry_id,
+            "user": user,
+            "country": country,
+            "company": company,
+            "email": email,
+            "registration_date": registration_date,
+            "product_views_count": product_views_count,
+            "inquiries_count": inquiries_count,
+            "available_rfq_count": available_rfq_count,
+            "login_days_count": login_days_count,
+            "spam_inquiries_count": spam_inquiries_count,
+            "blacklist_count": blacklist_count,
+            "follow_up_date": follow_up_date,
+            "count": count
+        }
+
+        response = requests.post(webhook_url, json=payload)
+        if response.status_code == 200:
+            log_activity(f"📡 Inquiry {inquiry_id} sent to webhook.")
+        else:
+            log_error(f"❌ Failed to send inquiry to webhook: {response.text}")
+
+    except Exception as e:
+        log_error(f"❌ Error storing/sending inquiry: {str(e)}")
+
+
 # ------------------ MAIN LOOP ------------------
 
 def main():
@@ -260,7 +339,11 @@ def main():
             unread_messages_without_labels = []
 
             for message in unread_messages:
+                is_inquiry=False
                 container = message.find_element(By.XPATH, "ancestor::div[2]")
+                if container.find_element(By.CLASS_NAME, 'latest-msg-oneline').text == "[Inquiry]":
+                    is_inquiry=True
+                
                 labels = container.find_elements(By.CLASS_NAME, "tag-item ")
                 last_msg_time = container.find_element(By.CLASS_NAME, "contact-time").text
                 today = datetime.today()
@@ -279,9 +362,11 @@ def main():
 
                 message_container = driver.find_element(By.CSS_SELECTOR, "div.scroll-box > *")
                 message_text, img_url = extract_message_data(message_container)
-                query = message_text
-                reply = generate_reply(driver, query, img_url)
+                reply = generate_reply(driver, message_text, img_url)
                 send_message(driver, recipient, reply)
+                if is_inquiry:
+                    log_activity("🔄 Inquiry detected, refreshing main page.")
+                    store_inquiry(driver)
 
                 driver.get(MAIN_URL)
                 log_activity("🔄 Returned to main page.")
