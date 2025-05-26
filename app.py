@@ -145,7 +145,7 @@ def start_browser():
             options.add_argument("--disable-web-security")
             options.add_argument("--allow-running-insecure-content")
             options.add_argument("--disable-features=VizDisplayCompositor")
-            # options.add_argument("--headless=new")
+            options.add_argument("--headless=new")
 
             driver = uc.Chrome(options=options, version_main=None)
             CHROME_PID = driver.browser_pid
