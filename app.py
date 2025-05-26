@@ -91,16 +91,7 @@ def wait_for_user_confirmation(message):
 
 def cleanup_and_exit():
     global CHROME_PID
-    if CHROME_PID:
-        try:
-            chrome_process = psutil.Process(CHROME_PID)
-            chrome_process.terminate()
-            chrome_process.wait(timeout=5)
-            log_activity("✅ Closed Chrome process started by script.")
-        except psutil.NoSuchProcess:
-            log_activity("⚠️ Chrome process not found (maybe already exited).")
-        except Exception as e:
-            log_error(f"⚠️ Error closing Chrome: {str(e)}")
+    cleanup_our_chrome_process()
     sys.exit(1)
 
 # ------------------ SESSION MANAGEMENT ------------------
@@ -118,27 +109,29 @@ def is_session_valid(driver):
         log_activity(f"⚠️ Unexpected error checking session: {str(e)}")
         return False
 
-def kill_existing_chrome_processes():
-    """Kill any existing Chrome processes that might interfere"""
-    try:
-        for proc in psutil.process_iter(['pid', 'name']):
-            if 'chrome' in proc.info['name'].lower():
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=3)
-                except (psutil.NoSuchProcess, psutil.TimeoutExpired):
-                    pass
-        log_activity("🧹 Cleaned up existing Chrome processes")
-        time.sleep(2)  # Wait for processes to fully terminate
-    except Exception as e:
-        log_activity(f"⚠️ Error during Chrome cleanup: {str(e)}")
+def cleanup_our_chrome_process():
+    """Only kill Chrome processes that were started by this script"""
+    global CHROME_PID
+    if CHROME_PID:
+        try:
+            chrome_process = psutil.Process(CHROME_PID)
+            if chrome_process.is_running():
+                chrome_process.terminate()
+                chrome_process.wait(timeout=5)
+                log_activity(f"🧹 Cleaned up our Chrome process (PID: {CHROME_PID})")
+        except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+            log_activity(f"⚠️ Chrome process {CHROME_PID} already terminated")
+        except Exception as e:
+            log_activity(f"⚠️ Error cleaning up Chrome process {CHROME_PID}: {str(e)}")
+        finally:
+            CHROME_PID = None
 
 def start_browser():
     """Start browser with enhanced error handling"""
     global CHROME_PID
     
-    # Clean up any existing Chrome processes first
-    kill_existing_chrome_processes()
+    # Only clean up our own Chrome process if it exists
+    cleanup_our_chrome_process()
     
     max_attempts = 3
     for attempt in range(max_attempts):
@@ -191,14 +184,8 @@ def recover_session(driver):
     except:
         pass
     
-    # Kill the old Chrome process if it exists
-    if CHROME_PID:
-        try:
-            chrome_process = psutil.Process(CHROME_PID)
-            chrome_process.terminate()
-            chrome_process.wait(timeout=5)
-        except:
-            pass
+    # Only kill our own Chrome process
+    cleanup_our_chrome_process()
     
     # Wait a bit for cleanup
     time.sleep(3)
