@@ -15,6 +15,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
 import openpyxl
 from openpyxl import Workbook
+from selenium.common.exceptions import InvalidSessionIdException
 
 # ------------------ AUTO-INSTALL REQUIRED MODULES ------------------
 
@@ -395,7 +396,11 @@ def main():
     
     while True:
         try:
-            unread_messages = safe_find_elements(driver, By.CLASS_NAME, "unread-num")
+            try:
+                unread_messages = safe_find_elements(driver, By.CLASS_NAME, "unread-num")
+            except InvalidSessionIdException:
+                print("Session expired, restarting driver...")
+                driver = create_driver() 
             unread_messages_without_labels = []
 
             for message in unread_messages:
