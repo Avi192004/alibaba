@@ -61,25 +61,25 @@ COOKIES_FILE = os.path.join(BASE_DIR, "cookies.json")
 ERROR_LOG = os.path.join(BASE_DIR, "error.log")
 ACTIVITY_LOG = os.path.join(BASE_DIR, "activity.log")
 # Spreadsheet setup
-SHEET_FILE = os.path.join(BASE_DIR, "inquiries.xlsx")
+# SHEET_FILE = os.path.join(BASE_DIR, "inquiries.xlsx")
 
 CHROME_PID = None
 
 # -------------------- EXCEL SETUP ------------------
 
-if not os.path.exists(SHEET_FILE):
-    wb = Workbook()
-    sheet = wb.active
-    sheet.title = "Inquiries"
-    sheet.append([
-        "Inquiry ID", "User", "Country", "Company", "Email", "Registration Date",
-        "Product Views", "Inquiries", "RFQs", "Login Days",
-        "Spam Inquiries", "Blacklist Count", "Follow-up Date", "Count"
-    ])
-    wb.save(SHEET_FILE)
-else:
-    wb = openpyxl.load_workbook(SHEET_FILE)
-    sheet = wb.active
+# if not os.path.exists(SHEET_FILE):
+#     wb = Workbook()
+#     sheet = wb.active
+#     sheet.title = "Inquiries"
+#     sheet.append([
+#         "Inquiry ID", "User", "Country", "Company", "Email", "Registration Date",
+#         "Product Views", "Inquiries", "RFQs", "Login Days",
+#         "Spam Inquiries", "Blacklist Count", "Follow-up Date", "Count"
+#     ])
+#     wb.save(SHEET_FILE)
+# else:
+#     wb = openpyxl.load_workbook(SHEET_FILE)
+#     sheet = wb.active
 
 # ------------------ LOGGING ------------------
 
@@ -321,14 +321,14 @@ def store_inquiry(driver, img_url):
         count = 1
 
         # Save to Excel sheet
-        sheet.append([
-            inquiry_id, user, country, company, email, registration_date,
-            product_views_count, inquiries_count, available_rfq_count,
-            login_days_count, spam_inquiries_count, blacklist_count,
-            follow_up_date, count, quantity, img
-        ])
-        wb.save(SHEET_FILE)
-        log_activity(f"📝 Stored inquiry {inquiry_id} to sheet.")
+        # sheet.append([
+        #     inquiry_id, user, country, company, email, registration_date,
+        #     product_views_count, inquiries_count, available_rfq_count,
+        #     login_days_count, spam_inquiries_count, blacklist_count,
+        #     follow_up_date, count, quantity, img
+        # ])
+        # wb.save(SHEET_FILE)
+        # log_activity(f"📝 Stored inquiry {inquiry_id} to sheet.")
 
         # Send to n8n webhook
         webhook_url = "https://n8n.ecowoodies.com/webhook/alibabadumping"  # Replace with actual URL
