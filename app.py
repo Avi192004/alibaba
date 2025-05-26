@@ -305,8 +305,8 @@ def generate_reply(driver, query, img_url):
     reply = None
     if USE_AI:
         reply = get_api_response(query, img_url)
-    if not reply or reply.strip() == "":
-        reply = get_ai_response(driver)
+    # if not reply or reply.strip() == "":
+    #     reply = get_ai_response(driver)
     if not reply or reply.strip() == "":
         reply = random.choice(REPLIES)
     return reply
