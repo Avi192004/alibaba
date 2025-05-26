@@ -396,11 +396,7 @@ def main():
     
     while True:
         try:
-            try:
-                unread_messages = safe_find_elements(driver, By.CLASS_NAME, "unread-num")
-            except InvalidSessionIdException:
-                print("Session expired, restarting driver...")
-                driver = create_driver() 
+            unread_messages = safe_find_elements(driver, By.CLASS_NAME, "unread-num")
             unread_messages_without_labels = []
 
             for message in unread_messages:
