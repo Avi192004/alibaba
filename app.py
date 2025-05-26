@@ -12,10 +12,15 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
+from selenium.common.exceptions import (
+    NoSuchElementException, 
+    TimeoutException, 
+    StaleElementReferenceException,
+    InvalidSessionIdException,
+    WebDriverException
+)
 import openpyxl
 from openpyxl import Workbook
-from selenium.common.exceptions import InvalidSessionIdException
 
 # ------------------ AUTO-INSTALL REQUIRED MODULES ------------------
 
@@ -61,26 +66,10 @@ else:
 COOKIES_FILE = os.path.join(BASE_DIR, "cookies.json")
 ERROR_LOG = os.path.join(BASE_DIR, "error.log")
 ACTIVITY_LOG = os.path.join(BASE_DIR, "activity.log")
-# Spreadsheet setup
-# SHEET_FILE = os.path.join(BASE_DIR, "inquiries.xlsx")
 
 CHROME_PID = None
-
-# -------------------- EXCEL SETUP ------------------
-
-# if not os.path.exists(SHEET_FILE):
-#     wb = Workbook()
-#     sheet = wb.active
-#     sheet.title = "Inquiries"
-#     sheet.append([
-#         "Inquiry ID", "User", "Country", "Company", "Email", "Registration Date",
-#         "Product Views", "Inquiries", "RFQs", "Login Days",
-#         "Spam Inquiries", "Blacklist Count", "Follow-up Date", "Count"
-#     ])
-#     wb.save(SHEET_FILE)
-# else:
-#     wb = openpyxl.load_workbook(SHEET_FILE)
-#     sheet = wb.active
+MAX_SESSION_RECOVERY_ATTEMPTS = 3
+SESSION_CHECK_INTERVAL = 300  # Check session health every 5 minutes
 
 # ------------------ LOGGING ------------------
 
@@ -114,50 +103,169 @@ def cleanup_and_exit():
             log_error(f"⚠️ Error closing Chrome: {str(e)}")
     sys.exit(1)
 
-# ------------------ BROWSER SETUP ------------------
+# ------------------ SESSION MANAGEMENT ------------------
+
+def is_session_valid(driver):
+    """Check if the current session is still valid"""
+    try:
+        # Try a simple operation to test session validity
+        driver.current_url
+        driver.title
+        return True
+    except (InvalidSessionIdException, WebDriverException):
+        return False
+    except Exception as e:
+        log_activity(f"⚠️ Unexpected error checking session: {str(e)}")
+        return False
+
+def kill_existing_chrome_processes():
+    """Kill any existing Chrome processes that might interfere"""
+    try:
+        for proc in psutil.process_iter(['pid', 'name']):
+            if 'chrome' in proc.info['name'].lower():
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                    pass
+        log_activity("🧹 Cleaned up existing Chrome processes")
+        time.sleep(2)  # Wait for processes to fully terminate
+    except Exception as e:
+        log_activity(f"⚠️ Error during Chrome cleanup: {str(e)}")
 
 def start_browser():
+    """Start browser with enhanced error handling"""
     global CHROME_PID
-    try:
-        options = uc.ChromeOptions()
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--headless=new")
+    
+    # Clean up any existing Chrome processes first
+    kill_existing_chrome_processes()
+    
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            options = uc.ChromeOptions()
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-extensions")
+            options.add_argument("--disable-web-security")
+            options.add_argument("--allow-running-insecure-content")
+            options.add_argument("--disable-features=VizDisplayCompositor")
+            # options.add_argument("--headless=new")
 
-        driver = uc.Chrome(options=options)
-        CHROME_PID = driver.browser_pid
-        log_activity(f"🔵 Started Chrome with PID: {CHROME_PID}")
-        return driver
-    except Exception as e:
-        log_error(f"⚠️ Failed to start browser: {str(e)}")
+            driver = uc.Chrome(options=options, version_main=None)
+            CHROME_PID = driver.browser_pid
+            log_activity(f"🔵 Started Chrome with PID: {CHROME_PID} (attempt {attempt + 1})")
+            
+            # Test the session immediately
+            if is_session_valid(driver):
+                return driver
+            else:
+                driver.quit()
+                continue
+                
+        except Exception as e:
+            log_error(f"⚠️ Failed to start browser (attempt {attempt + 1}): {str(e)}")
+            if attempt < max_attempts - 1:
+                time.sleep(5)  # Wait before retrying
+                continue
+            else:
+                cleanup_and_exit()
+    
+    return None
+
+def recover_session(driver):
+    """Attempt to recover from a broken session"""
+    global CHROME_PID
+    
+    log_activity("🔄 Attempting session recovery...")
+    
+    try:
+        # Try to quit the current driver gracefully
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
+    except:
+        pass
+    
+    # Kill the old Chrome process if it exists
+    if CHROME_PID:
+        try:
+            chrome_process = psutil.Process(CHROME_PID)
+            chrome_process.terminate()
+            chrome_process.wait(timeout=5)
+        except:
+            pass
+    
+    # Wait a bit for cleanup
+    time.sleep(3)
+    
+    # Start a new browser session
+    new_driver = start_browser()
+    if new_driver:
+        log_activity("✅ Session recovered successfully")
+        return new_driver
+    else:
+        log_error("❌ Failed to recover session")
         cleanup_and_exit()
 
 # ------------------ LOGIN ------------------
 
 def login(driver):
-    try:
-        driver.get(BASE_URL)
-        if os.path.exists(COOKIES_FILE):
-            with open(COOKIES_FILE, "r") as f:
-                cookies = json.load(f)
-                for cookie in cookies:
-                    driver.add_cookie(cookie)
-            log_activity("✅ Cookies loaded.")
-        else:
-            wait_for_user_confirmation("🔐 No cookies found. Please log in manually in the browser window.")
+    """Login with enhanced error handling"""
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            if not is_session_valid(driver):
+                log_activity("⚠️ Invalid session detected during login")
+                return False
+                
+            driver.get(BASE_URL)
+            time.sleep(3)
+            
+            if os.path.exists(COOKIES_FILE):
+                with open(COOKIES_FILE, "r") as f:
+                    cookies = json.load(f)
+                    for cookie in cookies:
+                        try:
+                            driver.add_cookie(cookie)
+                        except Exception as e:
+                            # Skip invalid cookies
+                            continue
+                log_activity("✅ Cookies loaded.")
+            else:
+                wait_for_user_confirmation("🔐 No cookies found. Please log in manually in the browser window.")
+                driver.get(MAIN_URL)
+                time.sleep(10)
+                cookies = driver.get_cookies()
+                with open(COOKIES_FILE, "w") as f:
+                    json.dump(cookies, f)
+                log_activity("✅ Cookies saved after manual login.")
+            
             driver.get(MAIN_URL)
-            time.sleep(10)
-            cookies = driver.get_cookies()
-            with open(COOKIES_FILE, "w") as f:
-                json.dump(cookies, f)
-            log_activity("✅ Cookies saved after manual login.")
-        driver.get(MAIN_URL)
-    except Exception as e:
-        log_error(f"⚠️ Login failed: {str(e)}")
-        cleanup_and_exit()
+            time.sleep(5)
+            
+            # Verify we're logged in by checking for expected elements
+            if is_session_valid(driver):
+                return True
+            else:
+                if attempt < max_attempts - 1:
+                    log_activity(f"⚠️ Login verification failed, retrying... (attempt {attempt + 1})")
+                    time.sleep(5)
+                    continue
+                    
+        except Exception as e:
+            log_error(f"⚠️ Login failed (attempt {attempt + 1}): {str(e)}")
+            if attempt < max_attempts - 1:
+                time.sleep(5)
+                continue
+            else:
+                return False
+    
+    return False
 
 # ------------------ API RESPONSE ------------------
 
@@ -182,6 +290,9 @@ def get_api_response(question, img_url=None):
 
 def get_ai_response(driver):
     try:
+        if not is_session_valid(driver):
+            return None
+            
         ai_button = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.ID, "assistant-entry-icon"))
         )
@@ -215,6 +326,9 @@ def generate_reply(driver, query, img_url):
 
 def send_message(driver, recipient, message):
     try:
+        if not is_session_valid(driver):
+            return False
+            
         message_box = driver.find_element(By.CLASS_NAME, "send-textarea")
         message_box.send_keys(Keys.CONTROL + "a")
         time.sleep(0.5)
@@ -225,8 +339,10 @@ def send_message(driver, recipient, message):
         send_button = driver.find_element(By.XPATH, "//button[contains(@class, 'send-tool-button')]")
         send_button.click()
         log_activity(f"✅ Sent message to {recipient}: {message}")
+        return True
     except Exception as e:
         log_error(f"❌ Error sending message to {recipient}: {str(e)}")
+        return False
 
 def extract_message_data(message_container):
     try:
@@ -259,14 +375,16 @@ def safe_find_element(element, by, value, default=""):
     """Safely find an element and return its text, or default value if not found"""
     try:
         return element.find_element(by, value).text.strip()
-    except (NoSuchElementException, StaleElementReferenceException):
+    except (NoSuchElementException, StaleElementReferenceException, InvalidSessionIdException):
         return default
 
-def safe_find_elements(element, by, value):
+def safe_find_elements(driver_or_element, by, value):
     """Safely find elements and return the list, or empty list if not found"""
     try:
-        return element.find_elements(by, value)
-    except (NoSuchElementException, StaleElementReferenceException):
+        if not is_session_valid(driver_or_element) if hasattr(driver_or_element, 'current_url') else True:
+            return []
+        return driver_or_element.find_elements(by, value)
+    except (NoSuchElementException, StaleElementReferenceException, InvalidSessionIdException):
         return []
 
 def check_if_inquiry(container):
@@ -300,6 +418,9 @@ def check_if_inquiry(container):
 
 def store_inquiry(driver, img_url):
     try:
+        if not is_session_valid(driver):
+            return False
+            
         user = safe_find_element(driver, By.CSS_SELECTOR, ".name-text", "Unknown User")
         country = safe_find_element(driver, By.CSS_SELECTOR, ".country-flag-label", "Unknown Country")
         
@@ -314,22 +435,10 @@ def store_inquiry(driver, img_url):
         login_days_count = safe_find_element(driver, By.CSS_SELECTOR, "div.landing-days.indicator > div.count", "0")
         spam_inquiries_count = safe_find_element(driver, By.CSS_SELECTOR, "div.trash-inquires.indicator > div.count", "0")
         blacklist_count = safe_find_element(driver, By.CSS_SELECTOR, "div.add-blacklist.indicator > div.count", "0")
-        quantity = inquiry_card_data[5].text.strip()
-        img = img_url
-
+        
         follow_up_date = (datetime.today() + timedelta(days=3)).strftime('%Y-%m-%d')
         inquiry_id = f"INQ-{int(time.time())}"
         count = 1
-
-        # Save to Excel sheet
-        # sheet.append([
-        #     inquiry_id, user, country, company, email, registration_date,
-        #     product_views_count, inquiries_count, available_rfq_count,
-        #     login_days_count, spam_inquiries_count, blacklist_count,
-        #     follow_up_date, count, quantity, img
-        # ])
-        # wb.save(SHEET_FILE)
-        # log_activity(f"📝 Stored inquiry {inquiry_id} to sheet.")
 
         # Send to n8n webhook
         webhook_url = "https://n8n.ecowoodies.com/webhook/alibabadumping"  # Replace with actual URL
@@ -348,8 +457,7 @@ def store_inquiry(driver, img_url):
             "blacklist_count": blacklist_count,
             "follow_up_date": follow_up_date,
             "count": count,
-            "quantity": quantity,
-            "img": img
+            "img": img_url
         }
 
         try:
@@ -360,9 +468,12 @@ def store_inquiry(driver, img_url):
                 log_error(f"❌ Failed to send inquiry to webhook: {response.text}")
         except requests.exceptions.RequestException as e:
             log_error(f"❌ Webhook request failed: {str(e)}")
+        
+        return True
 
     except Exception as e:
         log_error(f"❌ Error storing/sending inquiry: {str(e)}")
+        return False
 
 # ------------------ MAIN LOOP ------------------
 
@@ -372,7 +483,9 @@ def main():
         print("❌ Failed to start browser.")
         return
 
-    login(driver)
+    if not login(driver):
+        log_error("❌ Failed to login")
+        cleanup_and_exit()
 
     # Close popups with error handling
     try:
@@ -393,9 +506,20 @@ def main():
 
     i = 0
     consecutive_errors = 0
+    last_session_check = time.time()
+    session_recovery_attempts = 0
     
     while True:
         try:
+            # Periodic session health check
+            current_time = time.time()
+            if current_time - last_session_check > SESSION_CHECK_INTERVAL:
+                if not is_session_valid(driver):
+                    log_activity("⚠️ Session health check failed")
+                    raise InvalidSessionIdException("Session invalid during health check")
+                last_session_check = current_time
+                log_activity("✅ Session health check passed")
+
             unread_messages = safe_find_elements(driver, By.CLASS_NAME, "unread-num")
             unread_messages_without_labels = []
 
@@ -437,6 +561,7 @@ def main():
             if unread_messages_without_labels:
                 i = 0
                 consecutive_errors = 0  # Reset error counter on success
+                session_recovery_attempts = 0  # Reset recovery attempts
                 
                 message_element, is_inquiry = unread_messages_without_labels[0]
                 try:
@@ -451,16 +576,15 @@ def main():
                     try:
                         message_container = driver.find_element(By.CSS_SELECTOR, "div.scroll-box > *")
                         message_text, img_url = extract_message_data(message_container)
-                    except NoSuchElemen_utException:
+                    except NoSuchElementException:
                         message_text, img_url = "New message", None
                         log_activity("⚠️ Could not extract message details, using default.")
 
                     reply = generate_reply(driver, message_text, img_url)
-                    send_message(driver, recipient, reply)
-                    
-                    if is_inquiry:
-                        log_activity("🔄 Inquiry detected, storing data.")
-                        store_inquiry(driver, img_url)
+                    if send_message(driver, recipient, reply):
+                        if is_inquiry:
+                            log_activity("🔄 Inquiry detected, storing data.")
+                            store_inquiry(driver, img_url)
 
                     driver.get(MAIN_URL)
                     log_activity("🔄 Returned to main page.")
@@ -476,9 +600,27 @@ def main():
             # Refresh page periodically
             if i > 7:
                 log_activity("🔄 Refreshing main page after inactivity.")
-                driver.refresh()
-                time.sleep(random.uniform(25, 30))
+                if is_session_valid(driver):
+                    driver.refresh()
+                    time.sleep(random.uniform(25, 30))
+                else:
+                    raise InvalidSessionIdException("Session invalid during refresh")
                 i = 0
+                
+        except InvalidSessionIdException as e:
+            log_error(f"⚠️ Session disconnected: {str(e)}")
+            if session_recovery_attempts < MAX_SESSION_RECOVERY_ATTEMPTS:
+                session_recovery_attempts += 1
+                driver = recover_session(driver)
+                if driver and login(driver):
+                    consecutive_errors = 0
+                    continue
+                else:
+                    log_error("❌ Failed to recover session and login")
+                    cleanup_and_exit()
+            else:
+                log_error("❌ Maximum session recovery attempts reached")
+                cleanup_and_exit()
                 
         except Exception as e:
             consecutive_errors += 1
@@ -488,9 +630,19 @@ def main():
             if consecutive_errors >= 5:
                 log_activity("🔄 Too many consecutive errors, attempting recovery...")
                 try:
-                    driver.get(MAIN_URL)
-                    time.sleep(10)
-                    consecutive_errors = 0
+                    if is_session_valid(driver):
+                        driver.get(MAIN_URL)
+                        time.sleep(10)
+                        consecutive_errors = 0
+                    else:
+                        # Session is invalid, attempt recovery
+                        if session_recovery_attempts < MAX_SESSION_RECOVERY_ATTEMPTS:
+                            session_recovery_attempts += 1
+                            driver = recover_session(driver)
+                            if driver and login(driver):
+                                consecutive_errors = 0
+                                continue
+                        raise Exception("Session recovery failed")
                 except Exception as recovery_error:
                     log_error(f"❌ Recovery failed: {str(recovery_error)}")
                     cleanup_and_exit()
